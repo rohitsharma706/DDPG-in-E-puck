@@ -1,4 +1,4 @@
-"""DQN_MODIFIED_VERSION_17 AUG 23"""
+"""DDPG 10 Dec 23"""
 import os
 import numpy as np
 import torch
