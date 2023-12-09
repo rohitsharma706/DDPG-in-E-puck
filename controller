@@ -1,4 +1,4 @@
-"""DDPG_VERSION_10 DEC 23"""
+"""DQN_MODIFIED_VERSION_17 AUG 23"""
 import os
 import numpy as np
 import torch
@@ -8,156 +8,13 @@ import torch.optim as optim
 import matplotlib.pyplot as plt
 #from Tartarus import Tarpy
 from controller import Robot
-import torch.nn.functional as F
-
-class Actor(nn.Module):
-    def __init__(self, state_dim, action_dim, max_action):
-        super(Actor, self).__init__()
-        self.layer_1 = nn.Linear(state_dim, 400)
-        self.layer_2 = nn.Linear(400, 300)
-        self.layer_3 = nn.Linear(300, action_dim)
-        self.max_action = max_action
-
-    def forward(self, x):
-        x = F.relu(self.layer_1(x))
-        x = F.relu(self.layer_2(x))
-        return self.max_action * torch.tanh(self.layer_3(x))
-
-class Critic(nn.Module):
-    def __init__(self, state_dim, action_dim):
-        super(Critic, self).__init__()
-        # Q1 architecture
-        self.layer_1 = nn.Linear(state_dim + action_dim, 400)
-        self.layer_2 = nn.Linear(400, 300)
-        self.layer_3 = nn.Linear(300, 1)
-        # Q2 architecture
-        self.layer_4 = nn.Linear(state_dim + action_dim, 400)
-        self.layer_5 = nn.Linear(400, 300)
-        self.layer_6 = nn.Linear(300, 1)
-
-    def forward(self, x, u):
-        # Remove the middle dimension
-        x = x.squeeze(1)  # This changes shape from [100, 1, 5] to [100, 5]
-        u = u.squeeze(1)  # This changes shape from [100, 1, 2] to [100, 2]
-
-        # print(f"Shape of x (state tensor): {x.shape}")
-        # print(f"Shape of u (action tensor): {u.shape}")
-
-
-        xu = torch.cat([x, u], 1)
-        # Forward-Propagation on the first Critic Neural Network
-        x1 = F.relu(self.layer_1(xu))
-        x1 = F.relu(self.layer_2(x1))
-        x1 = self.layer_3(x1)
-        # Forward-Propagation on the second Critic Neural Network
-        x2 = F.relu(self.layer_4(xu))
-        x2 = F.relu(self.layer_5(x2))
-        x2 = self.layer_6(x2)
-        return x1, x2
-
-    def Q1(self, x, u):
-        xu = torch.cat([x, u], 1)
-        x1 = F.relu(self.layer_1(xu))
-        x1 = F.relu(self.layer_2(x1))
-        return self.layer_3(x1)
-import random
-
-class ReplayBuffer:
-    def __init__(self, max_size=1e6):
-        self.storage = []
-        self.max_size = max_size
-        self.ptr = 0
-
-    def add(self, transition):
-        if len(self.storage) == self.max_size:
-            self.storage[int(self.ptr)] = transition
-            self.ptr = (self.ptr + 1) % self.max_size
-        else:
-            self.storage.append(transition)
-    def __len__(self):
-        return len(self.storage)
-        
-    def sample(self, batch_size):
-        ind = np.random.randint(0, len(self.storage), size=batch_size)
-        x, y, u, r, d = [], [], [], [], []
-
-        for i in ind: 
-            X, Y, U, R, D = self.storage[i]
-            x.append(np.array(X, copy=False))
-            y.append(np.array(Y, copy=False))
-            u.append(np.array(U, copy=False))
-            r.append(np.array(R, copy=False))
-            d.append(np.array(D, copy=False))
-
-        return np.array(x), np.array(y), np.array(u), np.array(r), np.array(d)
-
-def train(actor, critic, actor_target, critic_target, replay_buffer, iterations, batch_size=100, discount=0.99, tau=0.005):
-    for it in range(iterations):
-        # Sample replay buffer
-        x, y, u, r, d = replay_buffer.sample(batch_size)
-        state = torch.FloatTensor(x).squeeze(1)
-        action = torch.FloatTensor(u).squeeze(1)
-        next_state = torch.FloatTensor(y).squeeze(1)
-        done = torch.FloatTensor(1 - d)
-        reward = torch.FloatTensor(r)
-
-        # Compute the target Q value
-        target_Q1, target_Q2 = critic_target(next_state, actor_target(next_state))
-        target_Q = torch.min(target_Q1, target_Q2)
-        target_Q = reward + ((1 - done) * discount * target_Q).detach()
-
-        # Get current Q estimates
-        current_Q1, current_Q2 = critic(state, action)
-
-        # Debugging prints
-        # print(f"target_Q1 shape: {target_Q1.shape}")
-        # print(f"target_Q2 shape: {target_Q2.shape}")
-        # print(f"reward shape before unsqueeze: {reward.shape}")
-        # print(f"done shape before unsqueeze: {done.shape}")
-
-        # Ensure reward and done are of correct shape
-        reward = reward.unsqueeze(-1)  # Reshape from [100] to [100, 1]
-        done = done.unsqueeze(-1)      # Reshape from [100] to [100, 1]
-
-        # print(f"reward shape after unsqueeze: {reward.shape}")
-        # print(f"done shape after unsqueeze: {done.shape}")
-
-        # Compute the target Q value
-        target_Q = torch.min(target_Q1, target_Q2)
-        target_Q = reward + ((1 - done) * discount * target_Q).detach()
-
-        # print(f"target_Q shape after calculation: {target_Q.shape}")
-
-        # Compute critic loss
-        critic_loss = F.mse_loss(current_Q1, target_Q) + F.mse_loss(current_Q2, target_Q)
-
-        # Optimize the critic
-        critic_optimizer.zero_grad()
-        critic_loss.backward()
-        critic_optimizer.step()
-
-        # Compute actor loss
-        actor_loss = -critic.Q1(state, actor(state)).mean()
-        
-        # Optimize the actor
-        actor_optimizer.zero_grad()
-        actor_loss.backward()
-        actor_optimizer.step()
-
-        # Update the frozen target models
-        for param, target_param in zip(critic.parameters(), critic_target.parameters()):
-            target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
-
-        for param, target_param in zip(actor.parameters(), actor_target.parameters()):
-            target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
-
 
 
 TIME_STEP = 100 #in millisconds #increase / decrease for slowing speeding up the simulation
 MAX_SPEED = 6.28
 send_weights_iter=100 #change this to change the num of iterations afgter which the weights are sent
 
-done = False
+
 robot=Robot()
 
 #initialize devices
@@ -177,7 +34,30 @@ leftMotor.setVelocity(0.0)
 rightMotor.setVelocity(0.0)
 psValues = [0,0,0,0,0]
 
+# Define the DQN neural network architecture
+#tweak nn architecture #readmore on the layers used-- pertaining to the standard implementation?
+class DQN(nn.Module):
+    def __init__(self, input_size, output_size):
+        super(DQN, self).__init__()
+        self.fc1 = nn.Linear(input_size, 64)
+        self.fc2 = nn.Linear(64, 64)
+        self.fc3 = nn.Linear(64, output_size)
 
+    def forward(self, x):
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
+        x = self.fc3(x)
+        return x
+#Function to read sensor values from the robot
+def read_sensors():
+    psValues = []
+    psValues=[sensor.getValue() for sensor in ps]
+    #proximity_values_meter = [value * sensor.getLookupTable()[0] for value, sensor in zip(psValues, ps)]
+    #for i in psValues:
+       #     print("psvals  ", i)
+    return psValues
+
+#FUNCTION TO CONVERT THE CONTINUOUS SENSOR VALUES INTO BINS
 def bin_sensor_values(sensor_values):
     no_obstacle_thresh=75
     obstacle_proximity_thresh=175
@@ -196,19 +76,56 @@ def bin_sensor_values(sensor_values):
         bin_sensors.append(val)
 
     return bin_sensors
-    
-#Function to read sensor values from the robot
-def read_sensors():
-    psValues = []
-    psValues=[sensor.getValue() for sensor in ps]
-    #proximity_values_meter = [value * sensor.getLookupTable()[0] for value, sensor in zip(psValues, ps)]
-    #for i in psValues:
-       #     print("psvals  ", i)
-    return psValues
-def select_action(state):
 
-    state_tensor = torch.FloatTensor(state).unsqueeze(0)  # Convert list to tensor and add batch dimension
-    return actor(state_tensor).cpu().data.numpy().flatten()
+# Define the path to the log file
+log_file_path = "batch_logs.txt"
+
+  
+
+# Function to select an action using epsilon-greedy policy
+def select_action(state, epsilon):
+    if np.random.rand() < epsilon:
+      #  print("random action")
+        return np.random.choice(output_size), 0
+    else:
+        with torch.no_grad(): #disable gradient calculation #only forward prop
+     #       print("NN Based Action")
+            return model(state).argmax().item(), model(state).max().item()#return the index of the maximum value in the tensor #returnmax q value also added newly
+        #note down the q value that this returns
+
+# to control the robot's movement
+def move_forward():
+    leftSpeed = 0.5 * MAX_SPEED
+    rightSpeed = 0.5 * MAX_SPEED
+    leftMotor.setVelocity(leftSpeed)
+    rightMotor.setVelocity(rightSpeed)
+    #print("forward")
+    time.sleep(0.1)
+
+def backward():
+    leftSpeed = -0.2 * MAX_SPEED
+    rightSpeed = -0.2 * MAX_SPEED
+    leftMotor.setVelocity(leftSpeed)
+    rightMotor.setVelocity(rightSpeed)
+    #print("backward")
+    time.sleep(0.1)
+
+
+def left():
+    leftSpeed = -0.5 * MAX_SPEED
+    rightSpeed = 0.5 * MAX_SPEED
+    leftMotor.setVelocity(leftSpeed)
+    rightMotor.setVelocity(rightSpeed)
+    #print("left")
+    time.sleep(0.1)
+
+def right():
+    leftSpeed = 0.5 * MAX_SPEED
+    rightSpeed = -0.5 * MAX_SPEED
+    leftMotor.setVelocity(leftSpeed)
+    rightMotor.setVelocity(rightSpeed)
+    #print("right")
+    time.sleep(0.1)
 
 def calculate_reward(previous_state, current_state, action):
     reward=0
@@ -271,80 +188,250 @@ def calculate_reward(previous_state, current_state, action):
      #       print("16. -10")
             
 
-        if action[0][0] ==0 and action[0][1] ==0 and current_state==[0,0,0,0,0]:
+        if action ==0 and current_state==[0,0,0,0,0]:
             reward+=2
 
     return reward
 
 
-# Initialize the DDPG components
-state_dim = 5  # Assuming five dimensions in the state space
-action_dim = 2  # Assuming four possible continuous actions
-max_action = 1.0  # Maximum value of action (adjust as needed)
+def train_dqn(model, target_model):
+    batch_size = 64
+    gamma = 0.99 ####changeeeeeee
+    epsilon = 1.0
+    epsilon_decay = 0.995
+    epsilon_min = 0.1
+    target_update = 20  # Update the target network every X episodes
+    replay_buffer_size = 1000
+    
+    optimizer = optim.Adam(model.parameters()) #optimizer is the Adam optimizer 
+    criterion = nn.MSELoss() #criterion is the Mean Squared Error (MSE) loss function
 
-actor = Actor(state_dim, action_dim, max_action)
-critic = Critic(state_dim, action_dim)
-actor_target = Actor(state_dim, action_dim, max_action)
-critic_target = Critic(state_dim, action_dim)
-actor_target.load_state_dict(actor.state_dict())
-critic_target.load_state_dict(critic.state_dict())
-actor_optimizer = torch.optim.Adam(actor.parameters())
-critic_optimizer = torch.optim.Adam(critic.parameters())
-replay_buffer = ReplayBuffer()
-
-# Main training loop
-num_episodes = 15000
-batch_size = 64
-for episode in range(num_episodes):
-
-    robot.step(TIME_STEP) # this is for updating the robot sensor values otherwise, the current and next states come up same
-    bin_sensors1 = read_sensors()
-    bin_sensors1 = bin_sensor_values(bin_sensors1)
-    state = torch.FloatTensor(bin_sensors1).unsqueeze(0)
-
-    episode_reward = 0
-
-    while not done:  # Replace with condition to check if the episode is finished
-        action = actor(state).detach().numpy()  # Actor selects the action
-        print(action)
-        leftSpeed = 6 * action[0][0]
-        rightSpeed = 6 * action[0][1]
-        leftMotor.setVelocity(leftSpeed)
-        rightMotor.setVelocity(rightSpeed)
-        #print("backward")
-        time.sleep(0.1)
+    qtarlist=[]
+    qvalmean=[]
+    replay_buffer = [] 
+    actual_reward_list=[]
+    rewards_list = []
+    qsum_list = []
+    q_values_list = []
+    state=[]
+    next_state=[]
+    episodelist=[]
+    losslist=[]
+    epsilon_list=[]
+    q_action_when_exploited=[]
+    buffer_list=[]
+    random_batch_list=[]
+    increasing_epsilon=False #changed
+    
+    total_reward = 0
+    for episode in range(num_episodes):
+        robot.step(TIME_STEP)
+        print("===========================================================================================")
+        episodelist.append(episode)
         
+        #time.sleep(1)
+        print("Episode:", episode)
+
+        state=read_sensors()
+
+        
+        
+        #print("Current actual State:", state)
+        bin_sensors1 = bin_sensor_values(state)
+
+      #  print("Current binned State:", bin_sensors1)
+       
+        state_tensor = torch.tensor([bin_sensors1], dtype=torch.float32)
+
+        action, q_action = select_action(state_tensor, epsilon)
+
+       # print("Selected Action:", action)
+        if action == 0:
+            move_forward()
+        elif action == 1:
+            backward()
+            #stop()
+        elif action == 2:
+            left()
+        elif action == 3:
+            right()
+
+        print("q_action   ",q_action)
+        #LOG THIS!!!!!!!!!
+        
+        # Execute the action and get the next state and reward 
         robot.step(TIME_STEP) # this is for updating the robot sensor values otherwise, the current and next states come up same
-        
-        bin_sensors2 = read_sensors()
-        bin_sensors2 = bin_sensor_values(bin_sensors2)
-        next_state = torch.FloatTensor(bin_sensors2).unsqueeze(0)
-        
+        next_state = read_sensors()
+        bin_sensors2=bin_sensor_values(next_state)
+
         reward = calculate_reward(bin_sensors1,bin_sensors2, action) #calculate the reward based on current and next state
-        done = False
-        
-        # next_state, reward, done, _ = env.step(action)  # Execute action in the environment
-        
-        
 
+        #print("Reward:", reward)
+        #print("===========================================================================================")
+        
+        total_reward += reward
+        q_action_when_exploited.append(q_action)
+        actual_reward_list.append(reward)
+        next_state_tensor = torch.tensor([bin_sensors2], dtype=torch.float32)
+        rewards_list.append(total_reward)
         # Store the transition in the replay buffer
-        replay_buffer.add((state, next_state, action, reward, float(done)))
-        state = next_state
-        bin_sensors1 = bin_sensors2
-        episode_reward += reward
+        replay_buffer.append((state_tensor, action, reward, next_state_tensor))
 
-        # Train the agent after collecting enough samples
-        if len(replay_buffer) > batch_size:
-            train(actor, critic, actor_target, critic_target, replay_buffer, iterations=batch_size)
 
-    print(f"Episode: {episode}, Reward: {episode_reward}")
+        bin_sensors1 = bin_sensors2 #update
+        if len(replay_buffer) > replay_buffer_size:
+            replay_buffer.pop(0) #remove the first element from the replay buffer -- circular queue implementation
 
-    # Save models periodically
-    if episode % 1000 == 0:
-        torch.save(actor.state_dict(), 'actor.pth')
-        torch.save(critic.state_dict(), 'critic.pth')
+        # Train the DQN from the replay buffer
+        if len(replay_buffer) >= 500: #NEEDS TO BE CHANGED TWEAKKKKKK #TWEAKED
+            batch = np.random.choice(len(replay_buffer), batch_size, replace=False) #randomly select batch_size number of elements from the replay buffer
+            random_batch_list.append(batch) #log into a new file
+            #print("==============================================================")
+            ##print("REPLAY BUFFER", replay_buffer)
+            #print("==============================================================")
+            state_batch, action_batch, reward_batch, next_state_batch = zip(*[replay_buffer[i] for i in batch]) #unzip the batch into individual lists
 
+            state_batch = torch.cat(state_batch) #concatenate the state tensors in the batch 64x5
+         #   print("State Batch Shape:", state_batch.shape)
+            #print("State batch:",state_batch)
+            action_batch = torch.tensor(action_batch) #batch of actions 64x1 ##whyyyy
+          #  print("Action Batch Shape:", action_batch.shape)
+            #print("Action batch", action_batch)
+            reward_batch = torch.tensor(reward_batch, dtype=torch.float32) #batch of rewards 64x1
+           # print("Reward Batch Shape:", reward_batch.shape)
+            #print("reward batch", reward_batch)
+            next_state_batch = torch.cat(next_state_batch) #concatenate the next state tensors in the batch 64x5
+           # print("Next State Batch Shape:", next_state_batch.shape)
+            #print("next_state_batch ",next_state_batch)
+
+            q_values = model(state_batch).gather(1, action_batch.unsqueeze(1)).squeeze(1)  #batch of max q values for current state 64x1
+            q_values_target = target_model(next_state_batch).max(1)[0] #batch of max q values for next state 64x1 ##NEWLY CHNAGED
+            q_sum = reward_batch + gamma * q_values_target  #calculate this for all 64 states for later use in the loss function #temporal difference
+            
+            # Clip Q-values and q_sum to prevent extreme values
+            q_values = torch.clamp(q_values, -1e5, 1e5)
+            q_sum = torch.clamp(q_sum, -1e5, 1e5)
+            if episode == 500: #changeeeee #changed
+                for i in range(500-1):
+                    qtarlist_clone=q_sum.clone().detach()
+                    q_values_list_clone=q_values.clone().detach()
+                    qtarlist.extend(qtarlist_clone[i].item() for i in range(32))
+                    q_values_list.extend(q_values_list_clone[i].item() for i in range(32))
+                  
+                    losslist.append(loss.item()) #whyyyyyy #why item()
+                    qsum_list.append(q_sum.mean().item())
+                    qvalmean.append(q_values.mean().item())
+                print("qsum_list",qsum_list)
+                print("qsum len",len(qsum_list))
+                print("losslist",losslist)
+                print("losslist",len(losslist))
+                print("qtar list", qtarlist)
+                print("qtar len: ", len(qtarlist))
+                print("q_values_list",q_values_list)
+                print("qvallist",len(q_values_list))
+            print("QSUM :",q_sum)
+            # for i in range(32):
+                # qtarlist.append(q_sum[i])
+                # q_values_list.append(q_values[i])
+            qtarlist_clone=q_sum.clone().detach()
+            q_values_list_clone=q_values.clone().detach()
+
+            qtarlist.extend(qtarlist_clone[i].item() for i in range(32))
+            q_values_list.extend(q_values_list_clone[i].item() for i in range(32))
+
+            print("QSUM MEAN: ",q_sum.mean())
+            qsum_list.append(q_sum.mean().item()) 
+            qvalmean.append(q_values.mean().item())
+            # Check for NaN or infinity in inputs
+            if torch.isnan(q_values).any() or torch.isnan(q_sum).any():
+               print("NaN or Infinity detected in Q-values or q_sum. Skipping update.")
+               continue
+
+            # Logging information for each batch into the log file
+            with open(log_file_path, "a") as log_file:
+                log_file.write(f"Episode: {episode}======================\n")
+                for i in range(batch_size):
+                    log_entry = f"Current State: {state_batch[i]}, " \
+                                f"Action: {action_batch[i]}, " \
+                                f"Next State: {next_state_batch[i]}, " \
+                                f"Reward: {reward_batch[i]}, " \
+                                f"Q Source Value: {q_values[i]}, " \
+                                f"Q Target Value: {q_values_target[i]}, " \
+                                f"Q Target_Bellman: {q_sum[i]}\n"
+                    log_file.write(log_entry)
+
+
+
+            loss = criterion(q_values, q_sum) #calculate the loss between q_values and q_sum temporal difference
+            #print("LOSS CALCULATED", loss.item())
+            
+           
+        
+            losslist.append(loss.item()) ######whyyyyy item()
+            
+            optimizer.zero_grad() #zero the gradients because PyTorch accumulates the gradients on subsequent backward passes
+            loss.backward() #backpropagate the loss
+            #nn.utils.clip_grad_norm_(model.parameters(), 5)
+            # Clip gradients to prevent exploding gradients
+            nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+
+    
+
+            optimizer.step() #update the weights and biases
+
+            buffer_list.append(replay_buffer)
+
+        if not increasing_epsilon: #changed
+            epsilon = max(epsilon * epsilon_decay, 0.1)
+            if epsilon<=0.1:
+                increasing_epsilon=True
+        else:
+            epsilon=min(epsilon/epsilon_decay,0.99)
+            if epsilon>=0.99:
+                increasing_epsilon=False
+        # if epsilon==0.1:
+        #     epsilon=0.99
+        # #print("EPSILON IS DECAYED")
+        epsilon_list.append(epsilon)
+
+        # Update the target network
+        if episode % target_update == 0 and episode>=500: #changed since before 500, not needed to transfer
+            target_model.load_state_dict(model.state_dict())
+
+  
+    return episodelist, actual_reward_list, rewards_list, qsum_list, q_values_list,losslist, epsilon_list, buffer_list, random_batch_list, q_action_when_exploited, qtarlist, qvalmean
+
+
+#print("Why is robot not executing for so long??")
+#if __name__ == "__main__": #this is executed only if the file is run directly and not imported #good coding practice in Python     
+input_size = 5
+output_size = 4  # Assuming four possible actions (forward, backward, left, right)
+num_episodes = 15000
+
+      
+model = DQN(input_size, output_size) #model is the DQN instance
+target_model = DQN(input_size, output_size) #target_model is the target DQN instance
+target_model.load_state_dict(model.state_dict()) #copy the weights and biases from model to target_model #NEWLY CHANGED #####whattt
+target_model.eval() #set target_model to evaluation mode #this is to freeze the target_model while training the model ###whyyy
+
+print("Starting Training...")
+episodelist, actual_rewards, cum_rewards, qsum, q_values,losslist,epsilon_list, buffer_list, random_batch_list, q_action_when_exploited, qtarlist, qvalmean = train_dqn(model, target_model)
 print("Training Complete!")
+# Save rewards, qsum, and q_values to text files
+rewdata = np.column_stack((episodelist, actual_rewards, epsilon_list)) #combine both the lists into a single 2D array
+# Save the combined data to the file "actual_rewards.txt"
+np.savetxt("actual_rewards.txt", rewdata, fmt="%d %.4f %.4f", header=" Episode Actual Epsilon", comments="")
 
+cumrewdata = np.column_stack((episodelist, cum_rewards, epsilon_list)) #combine both the lists into a single 2D array
+np.savetxt("cum_rewards.txt", cumrewdata, fmt="%d %.4f %.4f", header="Episode Cumulative Epsilon", comments="")
 
+qsumdata= np.column_stack((episodelist, qsum, qvalmean, epsilon_list)) #combine both the lists into a single 2D array
+np.savetxt("qtargetmean_VS_qsrcmean.txt", qsumdata, fmt="%d %.4f %.4f %.4f", header="Episode Qtargetmean Qsrcmean Epsilon", comments="")
+# Convert each tensor to a NumPy array and store them in a list
+# q_values = np.column_stack((episodelist, q_values, epsilon_list))
+# np.savetxt("Weights.txt", q_values, fmt="%s", header="Episode Number,  Weights", comments="")
 
+lossvalues = np.column_stack((episodelist, losslist, epsilon_list)) #combine both the lists into a single 2D array
+np.savetxt("loss.txt", lossvalues, fmt="%d %.4f %.4f", header="Episode Loss Epsilon", comments="")
+
+#plt.show()
