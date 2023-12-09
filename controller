@@ -1,0 +1,350 @@
+"""DQN_MODIFIED_VERSION_17 AUG 23"""
+import os
+import numpy as np
+import torch
+import time
+import torch.nn as nn
+import torch.optim as optim
+import matplotlib.pyplot as plt
+#from Tartarus import Tarpy
+from controller import Robot
+import torch.nn.functional as F
+
+class Actor(nn.Module):
+    def __init__(self, state_dim, action_dim, max_action):
+        super(Actor, self).__init__()
+        self.layer_1 = nn.Linear(state_dim, 400)
+        self.layer_2 = nn.Linear(400, 300)
+        self.layer_3 = nn.Linear(300, action_dim)
+        self.max_action = max_action
+
+    def forward(self, x):
+        x = F.relu(self.layer_1(x))
+        x = F.relu(self.layer_2(x))
+        return self.max_action * torch.tanh(self.layer_3(x))
+
+class Critic(nn.Module):
+    def __init__(self, state_dim, action_dim):
+        super(Critic, self).__init__()
+        # Q1 architecture
+        self.layer_1 = nn.Linear(state_dim + action_dim, 400)
+        self.layer_2 = nn.Linear(400, 300)
+        self.layer_3 = nn.Linear(300, 1)
+        # Q2 architecture
+        self.layer_4 = nn.Linear(state_dim + action_dim, 400)
+        self.layer_5 = nn.Linear(400, 300)
+        self.layer_6 = nn.Linear(300, 1)
+
+    def forward(self, x, u):
+        # Remove the middle dimension
+        x = x.squeeze(1)  # This changes shape from [100, 1, 5] to [100, 5]
+        u = u.squeeze(1)  # This changes shape from [100, 1, 2] to [100, 2]
+
+        # print(f"Shape of x (state tensor): {x.shape}")
+        # print(f"Shape of u (action tensor): {u.shape}")
+
+
+        xu = torch.cat([x, u], 1)
+        # Forward-Propagation on the first Critic Neural Network
+        x1 = F.relu(self.layer_1(xu))
+        x1 = F.relu(self.layer_2(x1))
+        x1 = self.layer_3(x1)
+        # Forward-Propagation on the second Critic Neural Network
+        x2 = F.relu(self.layer_4(xu))
+        x2 = F.relu(self.layer_5(x2))
+        x2 = self.layer_6(x2)
+        return x1, x2
+
+    def Q1(self, x, u):
+        xu = torch.cat([x, u], 1)
+        x1 = F.relu(self.layer_1(xu))
+        x1 = F.relu(self.layer_2(x1))
+        return self.layer_3(x1)
+import random
+
+class ReplayBuffer:
+    def __init__(self, max_size=1e6):
+        self.storage = []
+        self.max_size = max_size
+        self.ptr = 0
+
+    def add(self, transition):
+        if len(self.storage) == self.max_size:
+            self.storage[int(self.ptr)] = transition
+            self.ptr = (self.ptr + 1) % self.max_size
+        else:
+            self.storage.append(transition)
+    def __len__(self):
+        return len(self.storage)
+        
+    def sample(self, batch_size):
+        ind = np.random.randint(0, len(self.storage), size=batch_size)
+        x, y, u, r, d = [], [], [], [], []
+
+        for i in ind: 
+            X, Y, U, R, D = self.storage[i]
+            x.append(np.array(X, copy=False))
+            y.append(np.array(Y, copy=False))
+            u.append(np.array(U, copy=False))
+            r.append(np.array(R, copy=False))
+            d.append(np.array(D, copy=False))
+
+        return np.array(x), np.array(y), np.array(u), np.array(r), np.array(d)
+
+def train(actor, critic, actor_target, critic_target, replay_buffer, iterations, batch_size=100, discount=0.99, tau=0.005):
+    for it in range(iterations):
+        # Sample replay buffer
+        x, y, u, r, d = replay_buffer.sample(batch_size)
+        state = torch.FloatTensor(x).squeeze(1)
+        action = torch.FloatTensor(u).squeeze(1)
+        next_state = torch.FloatTensor(y).squeeze(1)
+        done = torch.FloatTensor(1 - d)
+        reward = torch.FloatTensor(r)
+
+        # Compute the target Q value
+        target_Q1, target_Q2 = critic_target(next_state, actor_target(next_state))
+        target_Q = torch.min(target_Q1, target_Q2)
+        target_Q = reward + ((1 - done) * discount * target_Q).detach()
+
+        # Get current Q estimates
+        current_Q1, current_Q2 = critic(state, action)
+
+        # Debugging prints
+        # print(f"target_Q1 shape: {target_Q1.shape}")
+        # print(f"target_Q2 shape: {target_Q2.shape}")
+        # print(f"reward shape before unsqueeze: {reward.shape}")
+        # print(f"done shape before unsqueeze: {done.shape}")
+
+        # Ensure reward and done are of correct shape
+        reward = reward.unsqueeze(-1)  # Reshape from [100] to [100, 1]
+        done = done.unsqueeze(-1)      # Reshape from [100] to [100, 1]
+
+        # print(f"reward shape after unsqueeze: {reward.shape}")
+        # print(f"done shape after unsqueeze: {done.shape}")
+
+        # Compute the target Q value
+        target_Q = torch.min(target_Q1, target_Q2)
+        target_Q = reward + ((1 - done) * discount * target_Q).detach()
+
+        # print(f"target_Q shape after calculation: {target_Q.shape}")
+
+        # Compute critic loss
+        critic_loss = F.mse_loss(current_Q1, target_Q) + F.mse_loss(current_Q2, target_Q)
+
+        # Optimize the critic
+        critic_optimizer.zero_grad()
+        critic_loss.backward()
+        critic_optimizer.step()
+
+        # Compute actor loss
+        actor_loss = -critic.Q1(state, actor(state)).mean()
+        
+        # Optimize the actor
+        actor_optimizer.zero_grad()
+        actor_loss.backward()
+        actor_optimizer.step()
+
+        # Update the frozen target models
+        for param, target_param in zip(critic.parameters(), critic_target.parameters()):
+            target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
+
+        for param, target_param in zip(actor.parameters(), actor_target.parameters()):
+            target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
+
+
+
+TIME_STEP = 100 #in millisconds #increase / decrease for slowing speeding up the simulation
+MAX_SPEED = 6.28
+send_weights_iter=100 #change this to change the num of iterations afgter which the weights are sent
+
+done = False
+robot=Robot()
+
+#initialize devices
+ps=[0,0,0,0,0]
+psNames=["ps0", "ps2", "ps4","ps5","ps7"] #two front ones 7,0; two side ones 5,2; one back 4
+ps=[robot.getDevice(name) for name in psNames]
+sampling_period=50 #in ms  It determines how often the proximity sensors will be sampled to get their values. A smaller value means the sensors will be read more frequently, while a larger value reduces the frequency.
+for sensor in ps:
+    sensor.enable(sampling_period)
+
+# Initialize motors
+leftMotor = robot.getDevice('left wheel motor')
+rightMotor = robot.getDevice('right wheel motor')
+leftMotor.setPosition(float('inf'))
+rightMotor.setPosition(float('inf'))
+leftMotor.setVelocity(0.0)
+rightMotor.setVelocity(0.0)
+psValues = [0,0,0,0,0]
+
+
+def bin_sensor_values(sensor_values):
+    no_obstacle_thresh=75
+    obstacle_proximity_thresh=175
+    obstacle_close_thresh=1000
+    bin_sensors=[]
+    for val in sensor_values:
+        #code for if val < 75 then  val=0 elif 75<=val<175 then val=1 elif 175<=val<1000 then val=2 elif val>1000 then val=3
+        if val<no_obstacle_thresh:
+            val=0
+        elif val>=no_obstacle_thresh and val<obstacle_proximity_thresh:
+            val=1
+        elif val>=obstacle_proximity_thresh and val<obstacle_close_thresh:
+            val=2
+        elif val>=obstacle_close_thresh:
+            val=3
+        bin_sensors.append(val)
+
+    return bin_sensors
+    
+#Function to read sensor values from the robot
+def read_sensors():
+    psValues = []
+    psValues=[sensor.getValue() for sensor in ps]
+    #proximity_values_meter = [value * sensor.getLookupTable()[0] for value, sensor in zip(psValues, ps)]
+    #for i in psValues:
+       #     print("psvals  ", i)
+    return psValues
+def select_action(state):
+
+    state_tensor = torch.FloatTensor(state).unsqueeze(0)  # Convert list to tensor and add batch dimension
+    return actor(state_tensor).cpu().data.numpy().flatten()
+
+def calculate_reward(previous_state, current_state, action):
+    reward=0
+    # Loop through each sensor and check for transitions
+    for prev_val, curr_val in zip(previous_state, current_state):
+        #0->0 +10; 0->1 +1; 0->2 -5; 0->3 -10;
+        #1->0 +5; 1->1 +1; 1->2 -5; 1->3 -10;
+        #2->0 +10; 2->1 +5; 2->2 -5; 2->3 -10;
+        if prev_val==0 and curr_val==0 and all(curr==0 for curr in current_state)==0:
+            reward+=2
+            #print("1. +10")
+        elif prev_val==0 and curr_val==1:
+            reward+=0.1
+            #print("2. +1")
+        elif prev_val==0 and curr_val==2:
+            reward-=1
+            #print("3. -5")
+        elif prev_val==0 and curr_val==3:
+            reward-=2
+            #print("4. -10")
+            
+        elif prev_val==1 and curr_val==0:
+            reward+=1
+            #print("5. +5")
+        elif prev_val==1 and curr_val==1:
+            reward+=0.1
+            #print("6. +1")
+        elif prev_val==1 and curr_val==2:
+            reward-=1
+            #print("7. -5")
+        elif prev_val==1 and curr_val==3:
+            reward-=2
+            
+            #print("8. -10")
+        elif prev_val==2 and curr_val==0:
+            reward+=2
+            #print("9. +10")
+        elif prev_val==2 and curr_val==1:
+            reward+=1
+           # print("10. +5")
+        elif prev_val==2 and curr_val==2:
+            reward-=1
+          #  print("11. -5")
+        elif prev_val==2 and curr_val==3:
+            reward-=2
+         #   print("12. -10")
+            
+        #3->0 +10; 3->1 +5; 3->2 +1; 3->3 -10;
+        elif prev_val==3 and curr_val==0:
+            reward+=2
+        #    print("13. +10")
+        elif prev_val==3 and curr_val==1:
+            reward+=1
+       #     print("14. +5")
+        elif prev_val==3 and curr_val==2:
+            reward+=0.1
+      #      print("15. +1")
+        elif prev_val==3 and curr_val==3:
+            reward-=2
+     #       print("16. -10")
+            
+
+        if action[0][0] ==0 and action[0][1] ==0 and current_state==[0,0,0,0,0]:
+            reward+=2
+
+    return reward
+
+
+# Initialize the DDPG components
+state_dim = 5  # Assuming five dimensions in the state space
+action_dim = 2  # Assuming four possible continuous actions
+max_action = 1.0  # Maximum value of action (adjust as needed)
+
+actor = Actor(state_dim, action_dim, max_action)
+critic = Critic(state_dim, action_dim)
+actor_target = Actor(state_dim, action_dim, max_action)
+critic_target = Critic(state_dim, action_dim)
+actor_target.load_state_dict(actor.state_dict())
+critic_target.load_state_dict(critic.state_dict())
+actor_optimizer = torch.optim.Adam(actor.parameters())
+critic_optimizer = torch.optim.Adam(critic.parameters())
+replay_buffer = ReplayBuffer()
+
+# Main training loop
+num_episodes = 15000
+batch_size = 64
+for episode in range(num_episodes):
+
+    robot.step(TIME_STEP) # this is for updating the robot sensor values otherwise, the current and next states come up same
+    bin_sensors1 = read_sensors()
+    bin_sensors1 = bin_sensor_values(bin_sensors1)
+    state = torch.FloatTensor(bin_sensors1).unsqueeze(0)
+
+    episode_reward = 0
+
+    while not done:  # Replace with condition to check if the episode is finished
+        action = actor(state).detach().numpy()  # Actor selects the action
+        print(action)
+        leftSpeed = 6 * action[0][0]
+        rightSpeed = 6 * action[0][1]
+        leftMotor.setVelocity(leftSpeed)
+        rightMotor.setVelocity(rightSpeed)
+        #print("backward")
+        time.sleep(0.1)
+        
+        robot.step(TIME_STEP) # this is for updating the robot sensor values otherwise, the current and next states come up same
+        
+        bin_sensors2 = read_sensors()
+        bin_sensors2 = bin_sensor_values(bin_sensors2)
+        next_state = torch.FloatTensor(bin_sensors2).unsqueeze(0)
+        
+        reward = calculate_reward(bin_sensors1,bin_sensors2, action) #calculate the reward based on current and next state
+        done = False
+        
+        # next_state, reward, done, _ = env.step(action)  # Execute action in the environment
+        
+        
+
+        # Store the transition in the replay buffer
+        replay_buffer.add((state, next_state, action, reward, float(done)))
+        state = next_state
+        bin_sensors1 = bin_sensors2
+        episode_reward += reward
+
+        # Train the agent after collecting enough samples
+        if len(replay_buffer) > batch_size:
+            train(actor, critic, actor_target, critic_target, replay_buffer, iterations=batch_size)
+
+    print(f"Episode: {episode}, Reward: {episode_reward}")
+
+    # Save models periodically
+    if episode % 1000 == 0:
+        torch.save(actor.state_dict(), 'actor.pth')
+        torch.save(critic.state_dict(), 'critic.pth')
+
+print("Training Complete!")
+
+
+
